@@ -90,28 +90,221 @@ function pine(x,z,h){let p=new T.Group();p.position.set(x,lawn,z);root.add(p);pi
 for(let i=0;i<48;i++){let x=-2.65+random()*3.7,z=.09+random()*.43;if(Math.abs(x-gateX)<.63)continue;let r=.055+random()*.105;ball(x,lawn+.044,z,r,r*.75,r,random()<.45?'#95ba85':'#70a87e');for(let j=0;j<3;j++)ball(x+(random()-.5)*r,lawn+r*.76,z+(random()-.5)*r,.034,.031,.034,j%2?pink:'#ffe4a2')}
 
 const fallX=.19,hitZ=1.18;
-const channel=new T.CatmullRomCurve3([V(.95,1.36,-1.17),V(.83,1.37,-.36),V(.30,1.372,.12),V(-.42,1.375,.39),V(-.24,1.37,.56),V(fallX,1.36,.68)]);
+const channel=new T.CatmullRomCurve3([V(.95,1.36,-1.17),V(.83,1.37,-.36),V(.30,1.372,.12),V(-.42,1.375,.39),V(-.24,1.37,.56),V(fallX,1.367,.66),V(fallX,1.367,.805)]);
 function ribbon(curve,width,color){let points=[],indices=[];for(let i=0;i<=56;i++){let t=i/56,p=curve.getPoint(t),d=curve.getTangent(t);let n=V(d.z,0,-d.x).normalize().multiplyScalar(width*(.88+.12*Math.sin(t*5)));for(let s of [-1,1])points.push(p.x+s*n.x,p.y,p.z+s*n.z);if(i){let a=i*2;indices.push(a-2,a-1,a,a-1,a+1,a)}}let g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(points,3));g.setIndex(indices);g.computeVertexNormals();return mesh(g,new T.MeshPhysicalMaterial({color,side:T.DoubleSide,clearcoat:1,roughness:.18}))}
 ribbon(channel,.164,'#72c8bb');ball(.95,1.374,-1.17,.24,.055,.26,'#9bd9c9');
 for(let i=0;i<7;i++){let t=i/7,p=channel.getPoint(t);ball(p.x,1.395,p.z,.077,.012,.033,'#c9f2dc')}
-const falls=new T.Group();root.add(falls);falls.position.set(fallX,0,0);
-for(let i=0;i<15;i++){let dx=(i-7)*.021;let pts=[];for(let j=0;j<=12;j++){let t=j/12;pts.push(V(dx*(1+.63*t)+.017*Math.sin(i+t*7)*t,1.367-1.275*t*t,.66+.52*t+.015*Math.cos(i)))}line(pts,.026+random()*.012,['#b2ebe0','#84d6cf','#e0f7eb','#9cded9'][i%4],falls)}
+// 同一条抛物线驱动水幕、流动亮纹和离开水幕边缘的水滴。
+const falls = new T.Group();
+root.add(falls);
+const lipZ=.805, lipY=1.367, impactY=.092;
+const fallRows=40, fallCols=14;
+function watercourse(u,t,phase,flow,out) {
+  const ripple=Math.sin(7*u+9*t-4*phase)*.012+Math.sin(17*u+16*t-6*phase)*.005;
+  const turbulent=t*t*(.013*Math.sin(17*t+11*u-4*phase)+.012*Math.sin(9*u+phase*3));
+  const width=(.082+.094*flow)*(1-.14*Math.sin(PI*t)+.35*t*t);
+  return out.set(fallX+u*width+turbulent,lipY-(lipY-impactY)*t*t,
+    lipZ+(hitZ-lipZ)*t+ripple*Math.sin(t*PI)+turbulent*t);
+}
+function stripGeometry(rows,cols,colored=false) {
+  const g=new T.BufferGeometry(),count=(rows+1)*(cols+1),indices=[];
+  g.setAttribute('position',new T.BufferAttribute(new Float32Array(count*3),3).setUsage(T.DynamicDrawUsage));
+  if(colored)g.setAttribute('color',new T.BufferAttribute(new Float32Array(count*3),3).setUsage(T.DynamicDrawUsage));
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const i=r*(cols+1)+c;
+    indices.push(i,i+cols+1,i+1,i+1,i+cols+1,i+cols+2);
+  }
+  g.setIndex(indices);return g;
+}
+const sheetGeo=stripGeometry(fallRows,fallCols,true);
+const waterfall=mesh(sheetGeo,new T.MeshPhysicalMaterial({vertexColors:true,side:T.DoubleSide,
+  transparent:true,opacity:.88,roughness:.19,clearcoat:.85,depthWrite:false}),0,0,0,falls);
+waterfall.castShadow=false;waterfall.renderOrder=4;waterfall.frustumCulled=false;
+const glints=[],glintMaterial=new T.MeshBasicMaterial({color:'#defaee',side:T.DoubleSide,
+  transparent:true,opacity:.76,depthWrite:false});
+for(let i=0;i<16;i++){
+  const g=stripGeometry(6,1),r=mesh(g,glintMaterial,0,0,0,falls);
+  r.castShadow=false;r.frustumCulled=false;r.renderOrder=5;glints.push(g);
+}
+const drops=new T.InstancedMesh(sphere,new T.MeshStandardMaterial({color:'#b3e9dd',roughness:.19}),30);
+drops.frustumCulled=false;falls.add(drops);
+const streamPoint=V(0,0,0),deepWater=new T.Color('#589fa9'),lightWater=new T.Color('#c2efe2'),streamColor=new T.Color();
+function animateFalls() {
+  const flow=cfg.flow, phase=waveTime;
+  if(flow<=.001)return;
+  const positions=sheetGeo.attributes.position,colors=sheetGeo.attributes.color;
+  for(let r=0;r<=fallRows;r++)for(let c=0;c<=fallCols;c++){
+    const t=r/fallRows,u=2*c/fallCols-1,i=r*(fallCols+1)+c;
+    watercourse(u,t,phase,flow,streamPoint);positions.setXYZ(i,streamPoint.x,streamPoint.y,streamPoint.z);
+    const rib=.5+.5*Math.sin(12*u+1.2*Math.sin(10*t-phase*4)+t*3);
+    const shimmer=.5+.5*Math.cos(15*t-phase*6+5*u);
+    streamColor.copy(deepWater).lerp(lightWater,.16+rib*.47+shimmer*.20+.14*t);
+    colors.setXYZ(i,streamColor.r,streamColor.g,streamColor.b);
+  }
+  positions.needsUpdate=colors.needsUpdate=true;sheetGeo.computeVertexNormals();
+  glints.forEach((g,i)=>{
+    const tip=(phase*(.66+.055*(i%5))+i*.618034)%1.22;
+    const lane=.89*Math.sin(i*2.4),attr=g.attributes.position;
+    for(let r=0;r<=6;r++){
+      const v=r/6,t=clamp(tip-.19*v,0,1);
+      const w=.026*Math.sin(PI*v);
+      for(let c=0;c<2;c++){
+        watercourse(lane+(c?1:-1)*w,t,phase,flow,streamPoint);
+        attr.setXYZ(2*r+c,streamPoint.x,streamPoint.y+.002,streamPoint.z+.004);
+      }
+    }
+    attr.needsUpdate=true;
+  });
+  for(let i=0;i<drops.count;i++){
+    const t=(phase*(.77+.043*(i%6))+i*.618034)%1,u=i%2?1:-1;
+    watercourse(u,t,phase,flow,streamPoint);
+    const spread=(.028+.041*(i%4))*t*t, radius=(.008+.003*(i%3))*Math.sin(PI*t);
+    instance(drops,i,streamPoint.x+u*spread,streamPoint.y,streamPoint.z+spread*.54,radius,radius*(1+2*t),radius);
+  }
+  drops.instanceMatrix.needsUpdate=true;
+}
+
 const subGroup=new T.Group();root.add(subGroup);for(let i=0;i<21;i++){let x=fallX+(random()-.5)*.48;line([V(x,.08,hitZ),V(x+.04,-.14,hitZ+.03),V(x+.12*Math.sin(i),-.32,hitZ+.12),V(x+.28*Math.sin(i),-.39,hitZ+.2+random()*.28)],.012+random()*.012,'#b8f2db',subGroup)}
 const threads=[];for(let i=0;i<25;i++){let a=(i/25)*TAU;let points=[];for(let k=0;k<12;k++){let t=k/11;points.push(V(fallX+Math.cos(a)*1.97*t+.13*Math.sin(t*8+i)*t,-.419+t*.016,hitZ+Math.sin(a)*1.28*t+.1*Math.cos(t*5+i)*t))}threads.push(line(points,.008+random()*.008,'#bbedd1',subGroup))}
 for(let i=0;i<34;i++){let x=-2.6+random()*5,z=.83+random()*.37;ball(x,-.37,z,.09+random()*.18,.07+random()*.2,.12,strata[i%7])}
 for(let i=0;i<25;i++){let x=1.4+random()*.34,z=-1.6+random()*2;rod(V(x,.015,z),V(x+.07,.19+random()*.21,z+.04),.012,'#97aa68')}
-const ship=new T.Group();root.add(ship);
-function hull(){let verts=[],idx=[];for(let layer=0;layer<3;layer++)for(let i=0;i<32;i++){let a=TAU*i/32,k=[.5,.95,1][layer];verts.push(Math.cos(a)*.51*k,[.03,.15,.24][layer]+.065*Math.pow(Math.cos(a),6),Math.sin(a)*.205*k);if(layer){let a0=(layer-1)*32+i,b=(layer-1)*32+(i+1)%32;idx.push(a0,a0+32,b,b,a0+32,b+32)}}let g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(verts,3));g.setIndex(idx);g.computeVertexNormals();let m=mesh(g,new T.MeshStandardMaterial({color:'#345f80',side:T.DoubleSide}),0,0,0,ship);target(m,salute);ball(0,.239,0,.51,.035,.205,wood,ship);
-for(let side of [-1,1]){let pts=[];for(let j=0;j<=12;j++){let a=PI*j/12;pts.push(V(.51*Math.cos(a),.244+.065*Math.pow(Math.cos(a),6),side*.206*Math.sin(a)))}line(pts,.019,gold,ship);for(let k=-1;k<=1;k++)ball(k*.19,.162,side*.19*(1-Math.abs(k)*.12),.027,.027,.014,gold,ship)}}hull();
-function sail(x,y,w,h){let g=new T.PlaneGeometry(w,h,10,8);let pos=g.attributes.position;for(let i=0;i<pos.count;i++){let u=pos.getX(i)/w+.5,v=pos.getY(i)/h+.5;pos.setXYZ(i,pos.getX(i)*(.8+.2*v),pos.getY(i)-.037*Math.sin(PI*u),.10*Math.sin(PI*v)+.045*Math.sin(u*PI))}g.computeVertexNormals();let m=mesh(g,new T.MeshStandardMaterial({color:'#fff7dd',side:T.DoubleSide}),x,y,0,ship);m.rotation.y=-.67;target(m,salute);rod(V(x-w*.55,y+h/2,0),V(x+w*.55,y+h/2,0),.015,wood,ship)}
-for(let [x,h] of [[-.21,.86],[.15,1.06]]){cyl(x,h/2+.10,0,.014,.025,h,wood,ship);sail(x,h*.64+.12,.42,h*.39);rod(V(x,h+.08,0),V(-.49,.28,0),.006,gold,ship)}
-let standard=flag(.15,1.12,0,blue,ship);standard.scale.setScalar(.78);for(let i=0;i<3;i++)box(.21+i*.027,1.32+(i===1?.01:0),.025,.021,.038,.009,gold,ship);
+// 船首朝局部 +X。横剖面同时定义船壳、甲板和舷边，转向时各部件共用一条龙骨。
+const ship = new T.Group();
+root.add(ship);
+ship.scale.setScalar(.89);
+const navy = '#284d73', bulwark = '#477e9c', trim = '#efc262', deck = '#c99261';
+const stations = [
+  // 纵向位置、半船宽、舷缘高度、龙骨高度
+  [-.62,.153,.37,.08], [-.54,.222,.35,-.015], [-.36,.258,.293,-.092],
+  [-.10,.271,.275,-.117], [.17,.259,.277,-.113], [.38,.218,.296,-.074],
+  [.54,.135,.329,.008], [.65,.053,.365,.116], [.69,.008,.395,.227]
+];
+function plankHull() {
+  const vertices = [], colors = [], triangles = [];
+  const paint = [bulwark, navy, navy, '#203f60', navy, navy, bulwark, deck];
+  const rings = stations.map(([x,w,h,k]) => [
+    V(x,h,-w), V(x,h-.056,-w*1.015), V(x,k+(h-k)*.46,-w*.92),
+    V(x,k+.035,-w*.38), V(x,k,0), V(x,k+.035,w*.38),
+    V(x,k+(h-k)*.46,w*.92), V(x,h-.056,w*1.015), V(x,h,w)
+  ]);
+  function face(a,b,c,d,color) {
+    const start = vertices.length/3, tint = new T.Color(color);
+    for (const p of [a,b,c,d]) { vertices.push(p.x,p.y,p.z); colors.push(tint.r,tint.g,tint.b); }
+    triangles.push(start,start+2,start+1,start,start+3,start+2);
+  }
+  for (let i=1; i<rings.length; i++) {
+    const aft=rings[i-1], fore=rings[i];
+    for (let j=0; j<8; j++) face(aft[j],aft[j+1],fore[j+1],fore[j],paint[Math.min(j,7-j)]);
+    face(aft[8],aft[0],fore[0],fore[8],deck);
+  }
+  for (const end of [rings[0],rings.at(-1)]) {
+    for (let j=0;j<4;j++) face(end[j],end[8-j],end[7-j],end[j+1],navy);
+  }
+  const g=new T.BufferGeometry();
+  g.setAttribute('position',new T.Float32BufferAttribute(vertices,3));
+  g.setAttribute('color',new T.Float32BufferAttribute(colors,3));
+  g.setIndex(triangles);g.computeVertexNormals();
+  mesh(g,new T.MeshStandardMaterial({vertexColors:true,side:T.DoubleSide,roughness:.51}),0,0,0,ship);
+  for (const side of [-1,1]) {
+    for (const offset of [.008,-.065]) line(stations.map(([x,w,h])=>V(x,h+offset,side*w*1.023)),.012,trim,ship);
+    for (const x of [-.29,-.085,.12]) {
+      const portWidth=x<-.2?.265:.275;
+      box(x,.219,side*portWidth,.085,.077,.018,'#172f48',ship);
+      rod(V(x,.225,side*portWidth),V(x,.235,side*(portWidth+.047)),.022,'#58636a',ship);
+    }
+  }
+}
+plankHull();
+// Raised stern gallery and glazed transom.
+box(-.48,.37,0,.285,.138,.392,navy,ship);
+box(-.48,.45,0,.326,.034,.429,trim,ship);
+box(-.48,.472,0,.308,.019,.409,deck,ship);
+for (const z of [-.132,-.044,.044,.132]) {
+  box(-.628,.377,z,.016,.077,.073,trim,ship);
+  box(-.638,.377,z,.01,.05,.051,'#9fd6d1',ship);
+}
+for (const side of [-1,1]) {
+  for (const x of [-.62,-.49,-.345]) rod(V(x,.479,side*.198),V(x,.544,side*.198),.011,trim,ship);
+  rod(V(-.63,.548,side*.198),V(-.336,.548,side*.198),.013,trim,ship);
+}
+const spar='#895735', cord='#716052';
+rod(V(.48,.327,0),V(.833,.47,0),.023,spar,ship);
+rod(V(.63,.255,0),V(.824,.46,0),.008,cord,ship);
+const canvasCloth = new T.MeshStandardMaterial({color:'#fff4d9',side:T.DoubleSide,roughness:.91});
+function squareSail(x, top, width, height) {
+  const rows=8, cols=14, points=[],indices=[];
+  // The yard, scalloped foot and seams follow the same billowed cloth surface.
+  function clothPoint(u,v) {
+    const halfSpan=(.5-.078*v)*width;
+    return V(x+.135*Math.sin(PI*v)*Math.sin(PI*u)+.12*(u-.5),
+      top-height*v+.036*Math.sin(PI*u)*v, (u*2-1)*halfSpan);
+  }
+  for(let j=0;j<=rows;j++) for(let i=0;i<=cols;i++) {
+    const p=clothPoint(i/cols,j/rows);points.push(p.x,p.y,p.z);
+    if(i&&j){const k=j*(cols+1)+i;indices.push(k-cols-2,k-1,k,k-cols-2,k,k-cols-1);}
+  }
+  const g=new T.BufferGeometry();
+  g.setAttribute('position',new T.Float32BufferAttribute(points,3));g.setIndex(indices);g.computeVertexNormals();
+  mesh(g,canvasCloth,0,0,0,ship);
+  rod(clothPoint(-.055,0),clothPoint(1.055,0),.014,spar,ship);
+  for(const u of [0,.33,.67,1]) {
+    const seam=Array.from({length:7},(_,j)=>clothPoint(u,j/6).add(V(.003,0,0)));
+    line(seam,.004,'#dcc99e',ship);
+  }
+}
+for(const [x,peak] of [[-.18,1.39],[.325,1.105]]) {
+  rod(V(x,.28,0),V(x,peak,0),.023,spar,ship);
+  for(const side of [-1,1]) rod(V(x-.12,.293,side*.216),V(x,peak-.21,0),.0065,cord,ship);
+}
+squareSail(-.18,1.03,.81,.37);
+squareSail(-.18,1.325,.59,.24);
+squareSail(.325,1.045,.59,.34);
+rod(V(.325,1.11,0),V(.825,.471,0),.007,cord,ship);
+const jib=new T.BufferGeometry();
+jib.setAttribute('position',new T.Float32BufferAttribute([.376,1.006,0,.779,.48,0,.432,.57,.016,.508,.68,.052],3));
+jib.setIndex([0,1,3,1,2,3,2,0,3]);jib.computeVertexNormals();mesh(jib,canvasCloth,0,0,0,ship);
+// The crown is painted on the moving standard, including its reverse face.
+const heraldry=document.createElement('canvas');heraldry.width=128;heraldry.height=64;
+const ink=heraldry.getContext('2d');ink.fillStyle=navy;ink.fillRect(0,0,128,64);
+ink.strokeStyle=trim;ink.lineWidth=5;ink.strokeRect(2,2,124,60);ink.fillStyle=trim;
+ink.beginPath();ink.moveTo(36,19);ink.lineTo(53,29);ink.lineTo(64,12);ink.lineTo(75,29);ink.lineTo(92,19);ink.lineTo(84,43);ink.lineTo(44,43);ink.closePath();ink.fill();ink.fillRect(45,47,38,4);
+const bannerTexture=new T.CanvasTexture(heraldry);bannerTexture.colorSpace=T.SRGBColorSpace;
+const bannerGeo=new T.PlaneGeometry(.314,.156,12,3);bannerGeo.translate(-.157,0,0);
+const standard=mesh(bannerGeo,new T.MeshStandardMaterial({map:bannerTexture,side:T.DoubleSide}),-.18,1.425,0,ship);
+flags.push(standard);
+rod(V(-.18,1.35,0),V(-.18,1.52,0),.012,trim,ship);
+ball(-.18,1.535,0,.021,.026,.021,trim,ship);
+ship.traverse(part=>{if(part.isMesh)target(part,salute);});
+
+// Arc-length sampling keeps the ship at cruising speed through both turns.
+const sailingLane=new T.CatmullRomCurve3([
+  [2,1.86],[1.59,2.32],[.70,2.37],[-1.10,2.37],[-1.77,2.30],[-2.05,1.86],
+  [-1.67,1.58],[-1.22,1.65],[-.61,2.14],[.20,2.21],[.86,2.17],[1.48,1.68],[1.85,1.66]
+].map(([x,z])=>V(x,0,z)),true);
+sailingLane.arcLengthDivisions=1024;
+const lapLength=sailingLane.getLength(), heading=V(0,0,0);
+function positionShip(time) {
+  const progress=(time*.325/lapLength+.16)%1;
+  sailingLane.getPointAt(progress,ship.position);
+  sailingLane.getTangentAt(progress,heading);
+  ship.position.y=water.position.y+.019*Math.sin(time*2.4);
+  ship.rotation.order='YXZ';
+  ship.rotation.set(.018*Math.sin(time*1.83),-Math.atan2(heading.z,heading.x),.021*Math.sin(time*2.12));
+}
+positionShip(0);
+
 const puffMat=new T.MeshBasicMaterial({color:'#f1fff4',transparent:true,opacity:.76,depthWrite:false}),foam=new T.InstancedMesh(sphere,puffMat,95),bubbles=new T.InstancedMesh(sphere,new T.MeshPhysicalMaterial({color:'#dbfff1',clearcoat:1,transparent:true,opacity:.68,depthWrite:false}),65);root.add(foam,bubbles);foam.renderOrder=5;bubbles.renderOrder=4;const dummy=new T.Object3D();
 function instance(m,i,x,y,z,a,b,c){dummy.position.set(x,y,z);dummy.scale.set(a,b,c);dummy.updateMatrix();m.setMatrixAt(i,dummy.matrix)}
 const particles=[];function spawn(kind,p,v,color,r,life){if(particles.length>420)return;let m=ball(p.x,p.y,p.z,r,r,r,color);m.castShadow=false;m.renderOrder=6;if(kind==='coin')m.scale.z*=.25;particles.push({kind,m,v,life})}
 function rocket(p=towers[Math.floor(random()*towers.length)]){spawn('rocket',p,V((random()-.5)*.6,2.7+random(),(random()-.5)*.6),'#ffe2a1',.046,.44+random()*.3)}
 function burst(p){let col=[pink,'#8ee1d2','#ffcb65','#bd94ed'][Math.floor(random()*4)];glow.position.copy(p);glow.color.set(col);flash=1;for(let i=0;i<42;i++){let y=random()*2-1,a=random()*TAU,s=Math.sqrt(1-y*y),n=1+random()*1.35;spawn('spark',p,V(Math.cos(a)*s*n,y*n,Math.sin(a)*s*n),col,.028+random()*.021,.6+random()*.55)}}
-function salute(){let dir=V(0,0,1).applyQuaternion(ship.quaternion);spawn('shot',ship.position.clone().add(V(0,.29,0)),dir.multiplyScalar(1.6).add(V(0,1.9,0)),'#546675',.062,3);notice('皇家礼炮')}
+function salute() {
+  const dir=V(0,0,1).applyQuaternion(ship.quaternion);
+  const side=dir.dot(ship.position)>0?-1:1;
+  const muzzle=V(-.085,.235,side*.322).multiplyScalar(ship.scale.x).applyQuaternion(ship.quaternion).add(ship.position);
+  spawn('shot',muzzle,dir.multiplyScalar(side*1.48).add(V(0,1.64,0)),'#546675',.045,3);
+  notice('皇家礼炮');
+}
 function wish(x=fallX,z=hitZ){spawn('coin',V(x-.55,1.57,z+.49),V(.73,.95,-.65),gold,.073,3)}
 function toss(x,z){spawn('ball',V(x-.3,1.28,z+.38),V(.5,1.5,-.5),pink,.11,3)}
 button('.actions','塔顶烟花',icon('fire')+'塔顶烟花',()=>{rocket();setTimeout(()=>rocket(),240);setTimeout(()=>rocket(),460)});
@@ -122,7 +315,7 @@ const daylight=new T.Color('#f6f2e9'),sunset=new T.Color('#f3c3a7'),night=new T.
 function physics(dt){clock+=dt;waveTime+=dt*cfg.flow;let d=cfg.day;
 tipVel+=(-tip*(13+cfg.firm*32)-tipVel*4.8)*dt;tip+=tipVel*dt;root.rotation.z=tip;root.scale.set(1+tip*.13,1-tip*.27,1+tip*.12);bridgeAngle+=(bridgeTarget-bridgeAngle)*.073;bridge.rotation.x=bridgeAngle;
 for(let p of pines){p.userData.bend=(p.userData.bend||0)*.965;p.rotation.z=Math.sin(clock*2+p.position.x)*.022+p.userData.bend}
-let a=clock*.21;ship.position.set(.23+1.96*Math.cos(a),.113+.019*Math.sin(clock*2.4),1.79+.62*Math.sin(a));ship.rotation.y=Math.atan2(-.62*Math.cos(a),-1.96*Math.sin(a));ship.rotation.z=.032*Math.sin(clock*2);
+positionShip(clock);
 if(cfg.flow>0)disturb(fallX,hitZ,(.045+.033*Math.sin(clock*19))*cfg.flow);
 let force=42+cfg.firm*62,drag=Math.exp(-(1+cfg.damp*4)*dt);for(let j=1;j<N-1;j++)for(let i=1;i<N-1;i++){let k=j*N+i;speed[k]=(speed[k]+(heights[k-1]+heights[k+1]+heights[k-N]+heights[k+N]-4*heights[k])*force*dt)*drag}
 for(let k=0;k<heights.length;k++)heights[k]+=speed[k]*dt;
@@ -130,7 +323,7 @@ for(let i=particles.length-1;i>=0;i--){let q=particles[i],p=q.m.position;q.life-
 if(q.life<=0||p.y<.11){if(q.kind==='rocket')burst(p);else if(p.y<.11&&['coin','shot','ball'].includes(q.kind)){disturb(p.x,p.z,1.65);for(let j=0;j<12;j++)spawn('drop',p,V(random()-.5,.6+random(),random()-.5),'#d9fff0',.032,.65)}root.remove(q.m);particles.splice(i,1)}}
 flash*=.946;if(d>.73){nightTimer-=dt;if(nightTimer<0){rocket();nightTimer=2+random()*2}}}
 function render(){causticTex.offset.set(.018*waveTime,.013*waveTime);drift();let d=cfg.day;sky.copy(daylight).lerp(sunset,Math.min(1,d*2)).lerp(night,Math.max(0,d*2-1));scene.background=sky;floor.material.color.copy(sky).multiplyScalar(.63+cfg.day*.42);hemi.intensity=2.05-d*1.57;sun.intensity=2.9-d*2.34;sun.color.set(d<.45?'#fff0d9':'#ffc895');rim.intensity=1.05+d*.4;glass.emissiveIntensity=Math.max(0,(d-.45)*3.2);stars.visible=d>.62;stars.children[0].material.opacity=clamp((d-.62)*3,0,1);glow.intensity=flash*55;
-flame.visible=lit;flame.scale.y=.145+.022*Math.sin(clock*18);falls.visible=subGroup.visible=foam.visible=bubbles.visible=cfg.flow>.001;falls.scale.x=.4+cfg.flow*.8;
+flame.visible=lit;flame.scale.y=.145+.022*Math.sin(clock*18);falls.visible=subGroup.visible=foam.visible=bubbles.visible=cfg.flow>.001;animateFalls();
 for(let m of flags){let pos=m.geometry.attributes.position;for(let i=0;i<pos.count;i++){let x=pos.getX(i);pos.setZ(i,x*.24*Math.sin(clock*5+x*14+m.position.x))}pos.needsUpdate=true}
 let pos=waterGeo.attributes.position;for(let k=0;k<pos.count;k++)pos.setY(k,heights[k]+.012*Math.sin(pos.getX(k)*3+clock*1.5)*Math.cos(pos.getZ(k)*3-clock));pos.needsUpdate=true;waterGeo.computeVertexNormals();
 for(let i=0;i<95;i++){let t=(waveTime*(.58+(i%7)*.07)+i*.618)%1,a=i*2.399,r=(.04+.41*t)*(.65+cfg.flow*.45),s=(1-t)*(.018+.025*(i%4)/3)*cfg.flow;instance(foam,i,fallX+Math.cos(a)*r,.13+(i%3===0?.33*Math.sin(PI*t):.03),hitZ+Math.sin(a)*r,s*1.6,s,s*1.3)}
