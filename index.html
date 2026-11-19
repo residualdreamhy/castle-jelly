@@ -44,7 +44,7 @@ function slab(size,y,h,r,c){let s=new T.Shape(),a=size/2;s.moveTo(-a+r,-a);s.lin
 let g=new T.ExtrudeGeometry(s,{depth:h,bevelEnabled:true,bevelSegments:3,steps:1,bevelSize:.045,bevelThickness:.044});g.rotateX(-PI/2);return mesh(g,c,0,y,0)}
 const strata=['#dbaca7','#f3d0b5','#cb9fae','#fff0cd','#d3b2c8','#d99f96','#efc3a5'];
 const draggableLayers=strata.slice(0,5).map((c,i)=>slab(5.94+i*.009,-.99+i*.105,.09,.23,c));
-const jelly=new T.MeshPhysicalMaterial({color:0x87d4c1,transparent:true,opacity:.55,roughness:.14,metalness:.05,clearcoat:1,depthWrite:false});
+const jelly=new T.MeshPhysicalMaterial({color:0x87d4c1,transparent:true,opacity:.46,roughness:.14,metalness:.05,clearcoat:1,depthWrite:false});
 const cut=slab(5.98,-.48,.518,.21,jelly);cut.castShadow=false;cut.renderOrder=2;
 const floor=box(0,-1.19,0,200,.22,200,new T.MeshLambertMaterial({color:0xd3d0c7}),scene);
 function footprint(x,z){let dx=Math.abs(x+.72)-1.99,dz=Math.abs(z+1.03)-1.63;return Math.hypot(Math.max(dx,0),Math.max(dz,0))+Math.min(Math.max(dx,dz),0)-.12}
@@ -61,7 +61,7 @@ let g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttrib
 // A generated gradient texture follows elevation across every triangle.
 let tex=document.createElement('canvas');tex.width=4;tex.height=512;let ctx=tex.getContext('2d');for(let j=0;j<512;j++){let h=2-j/512*3;ctx.fillStyle=h>1.22?'#a4c786':strata[((Math.floor((h+.99)/.14)%7)+7)%7];ctx.fillRect(0,j,4,1)}
 let uv=[];for(let i=0;i<points.length;i+=3)uv.push(.5,(points[i+1]+1+.042*Math.sin(points[i]*3+points[i+2]))/3);g.setAttribute('uv',new T.Float32BufferAttribute(uv,2));let map=new T.CanvasTexture(tex);map.colorSpace=T.SRGBColorSpace;mesh(g,new T.MeshStandardMaterial({map,roughness:.82,side:T.DoubleSide}))}cliff();
-const waterMat=new T.MeshPhysicalMaterial({transparent:true,opacity:.49,roughness:.13,clearcoat:1,depthWrite:false,side:T.DoubleSide});
+const waterMat=new T.MeshPhysicalMaterial({transparent:true,opacity:.36,roughness:.13,clearcoat:1,depthWrite:false,side:T.DoubleSide});
 const N=49,size=5.96,waterGeo=new T.PlaneGeometry(size,size,N-1,N-1);waterGeo.rotateX(-PI/2);let water=mesh(waterGeo,waterMat,0,.092,0);water.castShadow=false;water.renderOrder=3;
 let heights=new Float32Array(N*N),speed=new Float32Array(N*N);
 // 倾斜与水面晃动均在固定时间步更新。目标角在按住切面时持续有效。
@@ -351,7 +351,7 @@ const daylight=new T.Color('#f6f2e9'),sunset=new T.Color('#f3c3a7'),night=new T.
 function physics(dt){clock+=dt;waveTime+=dt*cfg.flow;let d=cfg.day;
 stepTilt(dt);bridgeAngle+=(bridgeTarget-bridgeAngle)*.073;bridge.rotation.x=bridgeAngle;
 for(let p of pines){p.userData.bend=(p.userData.bend||0)*.965;p.rotation.z=Math.sin(clock*2+p.position.x)*.022+p.userData.bend}
-positionShip(clock);
+positionShip(clock);swim(clock);
 if(cfg.flow>0)disturb(fallX,hitZ,(.045+.033*Math.sin(clock*19))*cfg.flow);
 let force=42+cfg.firm*62,drag=Math.exp(-(1+cfg.damp*4)*dt);for(let j=1;j<N-1;j++)for(let i=1;i<N-1;i++){let k=j*N+i;speed[k]=(speed[k]+(heights[k-1]+heights[k+1]+heights[k-N]+heights[k+N]-4*heights[k])*force*dt)*drag}
 for(let k=0;k<heights.length;k++)heights[k]+=speed[k]*dt;
@@ -418,6 +418,111 @@ function endDrag(e){
   drag=null;
 }
 canvas.onpointerup=canvas.onpointercancel=canvas.onlostpointercapture=endDrag;
+
+// 鱼头统一朝局部 +X，尾柄在 -X。每种鱼共用两份实例网格。
+const species=[
+  // 名称、身长、半高、半宽、体色、花纹色、鳍色、尾长、分叉深度
+  ['红白锦鲤',.32,.058,.055,'#fff1cb','#ec5933','#ef965b',.095,.40],
+  ['琉金金鱼',.245,.080,.066,'#ef8b22','#ffd36a','#ee7833',.130,.58],
+  ['霓虹灯鱼',.194,.032,.031,'#287888','#34e8ec','#de5854',.055,.48],
+  ['斑马鱼',.224,.039,.035,'#f7d898','#325985','#dfb76e',.072,.53],
+  ['孔雀鱼',.192,.038,.034,'#309c9c','#f4cc51','#e87072',.118,.10],
+  ['神仙鱼',.181,.087,.037,'#f2deae','#454c66','#8a82ab',.076,.25],
+  ['红樱桃鲃',.226,.051,.043,'#e86654','#883755','#d79750',.073,.46],
+  ['柠檬灯鱼',.19,.046,.033,'#eed658','#8d983e','#eaa43a',.069,.51]
+];
+function fishModel(id){
+  const [,length,h,w,base,pattern,fin,tailLength,fork]=species[id];
+  const bodyColor=new T.Color(base),mark=new T.Color(pattern),finColor=new T.Color(fin);
+  const pale=new T.Color('#fff1cc'),ink=new T.Color('#202d3b');
+  function geometry(){return {p:[],c:[],index:[]};}
+  function vertex(g,x,y,z,color){g.p.push(x,y,z);g.c.push(color.r,color.g,color.b);return g.p.length/3-1;}
+  function finish(g){
+    const geo=new T.BufferGeometry();
+    geo.setAttribute('position',new T.Float32BufferAttribute(g.p,3));
+    geo.setAttribute('color',new T.Float32BufferAttribute(g.c,3));
+    geo.setIndex(g.index);geo.computeVertexNormals();return geo;
+  }
+  function patch(g,points,c){const ids=points.map(p=>vertex(g,...p,c));for(let j=1;j+1<ids.length;j++)g.index.push(ids[0],ids[j],ids[j+1]);}
+  const body=geometry(),tail=geometry(),rings=26,sides=18;
+  for(let i=0;i<=rings;i++){
+    const u=i/rings;
+    const belly=.08*(1-u)+Math.pow(Math.sin(PI*u),.64)*(.72+.48*u);
+    for(let j=0;j<=sides;j++){
+      const a=TAU*j/sides,y=Math.cos(a),z=Math.sin(a);
+      const motifs=[Math.sin(16*u+2.6*z+2*y)>.18, y>.28&&Math.sin(u*22)>0,
+        Math.abs(y-.26)<.37,Math.cos(y*12+u*3)>.16,
+        Math.sin(15*u+5*y)>0,Math.cos(19*u+2*y)>.18,Math.abs(y)<.28,u>.49&&u<.63&&y>.12];
+      let color=bodyColor.clone().lerp(pale,Math.max(0,-y)*.42);
+      if(motifs[id])color.lerp(mark,.92);
+      if(id===2&&u<.54&&y<.05)color.set('#ea534f');
+      vertex(body,(u-.5)*length,y*h*belly,z*w*belly,color);
+      if(i&&j){const k=i*(sides+1)+j;body.index.push(k-sides-2,k-sides-1,k,k-sides-2,k,k-1);}
+    }
+  }
+  const dorsal=id===5?1.52:1.19;
+  patch(body,[[.15*length,.70*h,0],[-.06*length,dorsal*h,0],[-.34*length,.52*h,0]],finColor);
+  for(const side of [-1,1]){
+    patch(body,[[.13*length,-h*.13,side*w*.95],[-.16*length,-h*.34,side*w*1.68],[-.09*length,-h*.52,side*w*.87]],finColor);
+    const eye=(radius,offset,color)=>{
+      const pts=[];for(let j=0;j<12;j++){const a=TAU*j/12;pts.push([length*.306+radius*Math.cos(a),h*.16+radius*Math.sin(a),side*w*offset]);}
+      patch(body,pts,color);
+    };eye(h*.25,.79,pale);eye(h*.155,.80,ink);
+  }
+  // 扇尾和叉尾的外轮廓不同，鳍条随同一尾柄一起摆动。
+  const fan=id===4?1.49:id===1?1.32:1.03;
+  for(let j=0;j<10;j++){
+    const rim=k=>{const v=k/5-1;return [-tailLength*(1-fork*(1-Math.abs(v))),v*h*fan,.10*tailLength*Math.cos(v*PI)];};
+    patch(tail,[[.024,.003,0],rim(j),rim(j+1)],j%3===1?finColor.clone().lerp(pale,.28):finColor);
+  }
+  return [finish(body),finish(tail)];
+}
+// 两片可游水域分别沿前方湖岸和悬崖右岸展开，给水下碎石和切面留出净空。
+const shoals=[
+  [0,6,-1.28,2.03,.90,.26,.43,-.19], [1,7,1.70,2.13,.68,.28,-.54,-.22],
+  [2,12,-.08,2.55,1.70,.14,.45,-.29], [3,10,2.29,-.47,.27,1.52,-.52,-.24],
+  [4,8,-1.50,2.29,.80,.33,-.64,-.22], [5,5,2.39,-.62,.18,1.43,.38,-.22],
+  [6,9,.64,1.90,.98,.23,-.49,-.30], [7,11,2.26,.11,.21,1.59,.63,-.15]
+];
+const fishMaterial=new T.MeshStandardMaterial({vertexColors:true,side:T.DoubleSide,roughness:.52});
+const fishBatches=[],fish=[];
+// Separate sequence so stocking the lake does not change castle or fireworks randomness.
+let fishSeed=1847;function fishRand(){fishSeed=(Math.imul(fishSeed,1664525)+1013904223)>>>0;return fishSeed/4294967296;}
+for(const [id,count,cx,cz,rx,rz,rate,depth] of shoals){
+  const [body,tail]=fishModel(id).map(g=>{
+    const batch=new T.InstancedMesh(g,fishMaterial,count);
+    batch.instanceMatrix.setUsage(T.DynamicDrawUsage);batch.frustumCulled=false;root.add(batch);return batch;
+  });
+  fishBatches.push([body,tail]);
+  for(let i=0;i<count;i++){
+    fish.push({id,i,cx,cz,rx:rx*(.82+.16*fishRand()),rz:rz*(.80+.17*fishRand()),
+      phase:TAU*(i+.24*fishRand())/count+id*.67,rate:rate*(.96+.08*fishRand()),
+      depth:depth+(fishRand()-.5)*.037,beat:5+fishRand()*4,scale:.86+.17*fishRand(),
+      body,tail,position:V(0,0,0),direction:V(1,0,0)});
+  }
+}
+const fishUp=V(0,1,0),fishSide=V(0,0,1),fishNormal=V(0,1,0),nextFish=V(0,0,0);
+const fishPose=new T.Matrix4(),tailPose=new T.Matrix4(),tailSwing=new T.Matrix4(),fishSize=V(1,1,1);
+function swimPoint(f,t,out){
+  const a=f.phase+t*f.rate,x=f.cx+f.rx*Math.cos(a),z=f.cz+f.rz*Math.sin(a);
+  // 留在龙骨下方，俯仰时用实际水面限制上浮高度。
+  const top=Math.min(-.105,lakeHeight(x,z)-.07)-species[f.id][2]*1.58*f.scale;
+  return out.set(x,clamp(f.depth+.023*Math.sin(2*a+f.phase)+.28*liquidSlope(x,z),-.33,top),z);
+}
+function swim(t,initial=false){
+  for(const f of fish){
+    if(initial)swimPoint(f,t-1/60,f.position);
+    swimPoint(f,t,nextFish);
+    f.direction.subVectors(nextFish,f.position).normalize();f.position.copy(nextFish);
+    fishSide.crossVectors(f.direction,fishUp).normalize();fishNormal.crossVectors(fishSide,f.direction);
+    fishPose.makeBasis(f.direction,fishNormal,fishSide).scale(fishSize.setScalar(f.scale)).setPosition(f.position);
+    f.body.setMatrixAt(f.i,fishPose);
+    tailPose.makeTranslation(-species[f.id][1]*.5,0,0).multiply(tailSwing.makeRotationY(.40*Math.sin(t*f.beat+f.phase)));
+    f.tail.setMatrixAt(f.i,tailPose.premultiply(fishPose));
+  }
+  for(const pair of fishBatches)for(const batch of pair)batch.instanceMatrix.needsUpdate=true;
+}
+swim(0,true);
 
 const causticCanvas=document.createElement('canvas');causticCanvas.width=causticCanvas.height=128;
 const cx=causticCanvas.getContext('2d');for(let i=0;i<13;i++){cx.beginPath();for(let k=0;k<=40;k++){let x=128*k/40,y=i*11+5*Math.sin(x*TAU/128*2+i*.63)+3*Math.sin(x*TAU/128-i);if(k)cx.lineTo(x,y);else cx.moveTo(x,y)}cx.strokeStyle='rgba(240,255,211,.68)';cx.lineWidth=1.8;cx.stroke()}
